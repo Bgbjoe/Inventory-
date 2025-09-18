@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
+  <title>Inventory Scanner</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <meta name="theme-color" content="#ffffff">
+  <style>
+    :root { --pad: 14px; --radius: 14px; }
+    html, body { margin:0; padding:0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background:#f7f7f8; color:#111; }
+    header { position:sticky; top:0; background:#fff; padding: var(--pad); border-bottom:1px solid #e6e6e6; z-index:10; }
+    h1 { margin:0; font-size: 1.2rem; }
+    .container { padding: var(--pad); }
+    .card { background:#fff; border:1px solid #e6e6e6; border-radius: var(--radius); padding: var(--pad); margin-bottom: var(--pad); }
+    label { display:block; font-size: .9rem; margin-bottom: 6px; color:#444; }
+    input[type="text"], input[type="number"] {
+      width: 100%; padding: 12px; border:1px solid #d9d9dc; border-radius: 10px; font-size: 16px; box-sizing: border-box; background:#fff;
+    }
+    input[type="number"]::-webkit-outer-spin-button, input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+    .row { display:flex; gap:10px; }
+    .row > * { flex:1; }
+    button {
+      appearance:none; border:none; background:#111; color:#fff; padding:12px 14px; border-radius: 10px; font-size:16px; cursor:pointer;
+    }
+    button.secondary { background:#efeff2; color:#111; }
+    button.warn { background:#d11a2a; }
+    .actions { display:flex; gap:10px; flex-wrap:wrap; }
+    video { width:100%; border-radius: 10px; background:#000; }
+    #status { font-size:.9rem; color:#666; }
+    table { width:100%; border-collapse: collapse; font-size: 14px; }
+    th, td { padding:10px; border-bottom:1px solid #eee; text-align:left; }
+    tfoot td { font-weight:600; }
+    .small { font-size:.8rem; color:#666; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Inventory Scanner</h1>
+    <div class="small">Scan a barcode, enter qty, build a CSV.</div>
+  </header>
+
+  <div class="container">
+    <div class="card">
+      <div class="row" style="align-items:flex-end;">
+        <div>
+          <label for="barcode">Barcode (auto-fills on scan)</label>
+          <input id="barcode" type="text" inputmode="numeric" placeholder="Scan or type…">
+        </div>
+        <div style="max-width: 140px;">
+          <label for="qty">Qty</label>
+          <input id="qty" type="number" min="0" step="1" placeholder="0">
+        </div>
+      </div>
+      <div class="row" style="margin-top:10px; align-items:center;">
+        <div>
+          <label for="location">Location / Shelf (optional)</label>
+          <input id="location" type="text" placeholder="e.g., OR A, Central, MedSurg 3…">
+        </div>
+      </div>
+      <div class="actions" style="margin-top:10px;">
+        <button id="scanBtn">Start Camera Scan</button>
+        <button id="stopBtn" class="secondary">Stop Camera</button>
+        <button id="addBtn">Add Line</button>
+        <button id="clearBtn" class="warn">Clear All</button>
+      </div>
+      <div id="status" class="small" style="margin-top:8px;">Camera idle.</div>
+      <video id="preview" playsinline muted></video>
+    </div>
+
+    <div class="card">
+      <div class="row" style="align-items:flex-end;">
+        <div>
+          <label for="sku">Optional: Item Name / SKU</label>
+          <input id="sku" type="text" placeholder="(If you want to add a description)">
+        </div>
+        <div style="max-width: 180px;">
+          <label>&nbsp;</label>
+          <button id="exportBtn" style="width:100%;">Export CSV</button>
+        </div>
+      </div>
+      <div class="small" style="margin-top:6px;">Tip: Tap any cell to edit. Long‑press a row to delete.</div>
+    </div>
+
+    <div class="card">
+      <table id="table">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Timestamp</th>
+            <th>Barcode</th>
+            <th>Qty</th>
+            <th>Location</th>
+            <th>Item/SKU</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+        <tfoot>
+          <tr><td colspan="6" id="totals">0 items</td></tr>
+        </tfoot>
+      </table>
+    </div>
+  </div>
+
+  <!-- ZXing for barcode scanning -->
+  <script src="https://unpkg.com/@zxing/library@0.20.0/umd/index.min.js"></script>
+  <script>
+    const tableBody = document.querySelector('#table tbody');
+    const totalsCell = document.getElementById('totals');
+    const barcodeInput = document.getElementById('barcode');
+    const qtyInput = document.getElementById('qty');
+    const locationInput = document.getElementById('location');
+    const skuInput = document.getElementById('sku');
+    const statusEl = document.getElementById('status');
+    const videoEl = document.getElementById('preview');
+
+    let rows = JSON.parse(localStorage.getItem('inv_rows') || '[]');
+    let codeReader;
+    let currentStream = null;
+
+    function render() {
+      tableBody.innerHTML = '';
+      rows.forEach((r, i) => {
+        const tr = document.createElement('tr');
+        const cells = [
+          i + 1,
+          r.timestamp,
+          r.barcode,
+          r.qty,
+          r.location || '',
+          r.sku || ''
+        ];
+        cells.forEach((val, idx) => {
+          const td = document.createElement('td');
+          td.textContent = val;
+          td.contentEditable = idx !== 0; // allow edits except the index
+          td.addEventListener('input', () => {
+            const keyMap = ['idx','timestamp','barcode','qty','location','sku'];
+            const key = keyMap[idx];
+            if (key) {
+              rows[i][key] = td.textContent;
+              persist();
+              updateTotals();
+            }
+          });
+          td.addEventListener('contextmenu', (e) => {
+            e.preventDefault();
+            if (confirm('Delete this row?')) {
+              rows.splice(i,1);
+              persist();
+              render();
+            }
+          });
+          tr.appendChild(td);
+        });
+        tableBody.appendChild(tr);
+      });
+      updateTotals();
+    }
+
+    function updateTotals() {
+      const total = rows.reduce((acc, r) => acc + (parseFloat(r.qty) || 0), 0);
+      totalsCell.textContent = `${rows.length} lines • ${total} total units`;
+    }
+
+    function persist() {
+      localStorage.setItem('inv_rows', JSON.stringify(rows));
+    }
+
+    function addLine() {
+      const barcode = barcodeInput.value.trim();
+      const qty = qtyInput.value.trim();
+      if (!barcode) { alert('Please scan or enter a barcode.'); return; }
+      if (!qty) { alert('Please enter a quantity.'); return; }
+      const now = new Date();
+      const ts = now.toISOString().replace('T', ' ').slice(0,19);
+      rows.push({
+        timestamp: ts,
+        barcode,
+        qty,
+        location: locationInput.value.trim(),
+        sku: skuInput.value.trim()
+      });
+      barcodeInput.value = '';
+      qtyInput.value = '';
+      persist();
+      render();
+      barcodeInput.focus();
+    }
+
+    function toCSV(rows) {
+      const headers = ['Timestamp','Barcode','Qty','Location','Item/SKU'];
+      const escape = (v) => {
+        const s = (v ?? '').toString();
+        if (s.includes('"') || s.includes(',') || s.includes('\n')) {
+          return '"' + s.replace(/"/g, '""') + '"';
+        }
+        return s;
+      };
+      const lines = [headers.join(',')];
+      rows.forEach(r => {
+        lines.push([r.timestamp, r.barcode, r.qty, r.location || '', r.sku || ''].map(escape).join(','));
+      });
+      return lines.join('\n');
+    }
+
+    function exportCSV() {
+      const csv = toCSV(rows);
+      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      const date = new Date().toISOString().slice(0,10);
+      a.href = url;
+      a.download = `inventory-scan-${date}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    }
+
+    async function startScan() {
+      statusEl.textContent = 'Starting camera…';
+      try {
+        if (!codeReader) codeReader = new ZXing.BrowserMultiFormatReader();
+        const devices = await ZXing.BrowserCodeReader.listVideoInputDevices();
+        let deviceId = devices.length ? devices[devices.length - 1].deviceId : undefined; // prefer last (often back camera)
+        const constraints = deviceId ? { video: { deviceId: { exact: deviceId } } } : { video: { facingMode: 'environment' } };
+
+        if (currentStream) {
+          currentStream.getTracks().forEach(t => t.stop());
+          currentStream = null;
+        }
+
+        const stream = await navigator.mediaDevices.getUserMedia(constraints);
+        currentStream = stream;
+        videoEl.srcObject = stream;
+        await videoEl.play();
+
+        statusEl.textContent = 'Point camera at barcode…';
+        await codeReader.decodeFromVideoDevice(deviceId, videoEl, (result, err, controls) => {
+          if (result) {
+            barcodeInput.value = result.getText();
+            // brief visual feedback
+            videoEl.style.outline = '4px solid #00b341';
+            setTimeout(() => (videoEl.style.outline = 'none'), 300);
+            // optional: auto-focus qty
+            qtyInput.focus();
+          }
+        });
+      } catch (e) {
+        console.error(e);
+        statusEl.textContent = 'Camera error: ' + (e.message || e.toString());
+        alert('Could not start camera. On iPhone, open this page over HTTPS and allow camera access in Safari.');
+      }
+    }
+
+    function stopScan() {
+      if (codeReader) {
+        try { codeReader.reset(); } catch {}
+      }
+      if (currentStream) {
+        currentStream.getTracks().forEach(t => t.stop());
+        currentStream = null;
+      }
+      videoEl.srcObject = null;
+      statusEl.textContent = 'Camera idle.';
+    }
+
+    document.getElementById('addBtn').addEventListener('click', addLine);
+    document.getElementById('exportBtn').addEventListener('click', exportCSV);
+    document.getElementById('scanBtn').addEventListener('click', startScan);
+    document.getElementById('stopBtn').addEventListener('click', stopScan);
+    document.getElementById('clearBtn').addEventListener('click', () => {
+      if (confirm('Clear all rows?')) {
+        rows = [];
+        persist();
+        render();
+      }
+    });
+
+    render();
+
+    // PWA install
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('./sw.js').catch(console.error);
+      });
+    }
+  </script>
+</body>
+</html>
