@@ -80,7 +80,7 @@
           <button id="exportBtn" style="width:100%;">Export CSV</button>
         </div>
       </div>
-      <div class="small" style="margin-top:6px;">Tip: Tap any cell to edit. Long‑press a row to delete.</div>
+      <div class="small" style="margin-top:6px;">Tip: Tap any cell to edit. Long-press a row to delete.</div>
     </div>
 
     <div class="card">
@@ -134,7 +134,7 @@
         cells.forEach((val, idx) => {
           const td = document.createElement('td');
           td.textContent = val;
-          td.contentEditable = idx !== 0; // allow edits except the index
+          td.contentEditable = idx !== 0;
           td.addEventListener('input', () => {
             const keyMap = ['idx','timestamp','barcode','qty','location','sku'];
             const key = keyMap[idx];
@@ -223,35 +223,41 @@
       statusEl.textContent = 'Starting camera…';
       try {
         if (!codeReader) codeReader = new ZXing.BrowserMultiFormatReader();
-        const devices = await ZXing.BrowserCodeReader.listVideoInputDevices();
-        let deviceId = devices.length ? devices[devices.length - 1].deviceId : undefined; // prefer last (often back camera)
-        const constraints = deviceId ? { video: { deviceId: { exact: deviceId } } } : { video: { facingMode: 'environment' } };
 
-        if (currentStream) {
-          currentStream.getTracks().forEach(t => t.stop());
-          currentStream = null;
+        // Prefer back camera without enumerating devices
+        let constraints = { video: { facingMode: { exact: 'environment' } } };
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia(constraints);
+          currentStream = stream;
+        } catch (e) {
+          // Fallbacks
+          try {
+            const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+            currentStream = stream;
+          } catch (e2) {
+            const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+            currentStream = stream;
+          }
         }
 
-        const stream = await navigator.mediaDevices.getUserMedia(constraints);
-        currentStream = stream;
-        videoEl.srcObject = stream;
-        await videoEl.play();
+        if (currentStream) {
+          videoEl.srcObject = currentStream;
+          await videoEl.play();
+        }
 
         statusEl.textContent = 'Point camera at barcode…';
-        await codeReader.decodeFromVideoDevice(deviceId, videoEl, (result, err, controls) => {
+        await codeReader.decodeFromVideoDevice(null, videoEl, (result, err, controls) => {
           if (result) {
             barcodeInput.value = result.getText();
-            // brief visual feedback
             videoEl.style.outline = '4px solid #00b341';
             setTimeout(() => (videoEl.style.outline = 'none'), 300);
-            // optional: auto-focus qty
             qtyInput.focus();
           }
         });
       } catch (e) {
         console.error(e);
         statusEl.textContent = 'Camera error: ' + (e.message || e.toString());
-        alert('Could not start camera. On iPhone, open this page over HTTPS and allow camera access in Safari.');
+        alert('Could not start camera. Make sure the page is HTTPS and camera permission is allowed.');
       }
     }
 
@@ -281,7 +287,6 @@
 
     render();
 
-    // PWA install
     if ('serviceWorker' in navigator) {
       window.addEventListener('load', () => {
         navigator.serviceWorker.register('./sw.js').catch(console.error);
